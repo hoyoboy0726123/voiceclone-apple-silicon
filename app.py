@@ -7,10 +7,15 @@ Qwen3-TTS 聲音複製與語音合成系統（本地版）
 2. Voice Clone - 用參考音訊複製任意聲音
 3. CustomVoice TTS - 使用預設角色聲音 + 情緒/風格控制
 
+新增功能：
+- SRT 字幕輸出
+- 跨平台支援：macOS (MPS) / Windows (CUDA) / Linux (CUDA)
+
 針對 RTX 3080 Ti (12GB VRAM) 優化：一次只載入一個模型
 """
 
 import os
+import re
 import tempfile
 import datetime
 import platform
@@ -232,6 +237,89 @@ def _save_output(wavs, sr, prefix="output"):
     return filepath
 
 
+def _generate_srt(text: str, duration_seconds: float, output_path: str = None) -> str:
+    """
+    根據文字和音訊時長生成 SRT 字幕檔案
+
+    Args:
+        text: 字幕文字內容
+        duration_seconds: 音訊總時長（秒）
+        output_path: 輸出檔案路徑（可選）
+
+    Returns:
+        SRT 檔案路徑
+    """
+    if not text or not text.strip():
+        return None
+
+    # 計算每個字的預估時長（平均語速）
+    # 一般說話速度：中文約 4-5 字/秒，英文約 3-4 字/秒
+    char_count = len(text.strip())
+    avg_chars_per_second = 4.0  # 保守估計
+    num_segments = max(1, int(duration_seconds / 3))  # 每個字幕段最多 3 秒
+
+    # 將文字分割成多個段落
+    chars_per_segment = char_count // num_segments
+    if chars_per_segment < 10:  # 如果每段太少字，直接一段
+        segments = [(0, duration_seconds, text.strip())]
+    else:
+        segments = []
+        chars = text.strip()
+        current_pos = 0
+        segment_duration = duration_seconds / num_segments
+
+        for i in range(num_segments):
+            start_time = i * segment_duration
+            end_time = (i + 1) * segment_duration
+
+            # 盡量在標點符號處分割
+            if i < num_segments - 1:
+                # 找尋最近的標點符號
+                split_pos = min(current_pos + chars_per_segment, len(chars))
+                for punct in ['。', '！', '？', '，', '、', '.', '!', '?', ',', ';', ':']:
+                    punct_pos = chars.find(punct, current_pos + chars_per_segment // 2, split_pos)
+                    if punct_pos != -1:
+                        split_pos = punct_pos + 1
+                        break
+
+                segment_text = chars[current_pos:split_pos].strip()
+                current_pos = split_pos
+            else:
+                segment_text = chars[current_pos:].strip()
+
+            if segment_text:
+                segments.append((start_time, end_time, segment_text))
+
+    # 生成 SRT 格式
+    srt_content = []
+    for i, (start, end, segment_text) in enumerate(segments, 1):
+        srt_content.append(str(i))
+        srt_content.append(f"{_format_srt_time(start)} --> {_format_srt_time(end)}")
+        srt_content.append(segment_text)
+        srt_content.append("")
+
+    srt_text = "\n".join(srt_content)
+
+    # 儲存檔案
+    if output_path is None:
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = os.path.join(OUTPUT_DIR, f"subtitle_{ts}.srt")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(srt_text)
+
+    return output_path
+
+
+def _format_srt_time(seconds: float) -> str:
+    """將秒數轉換為 SRT 時間格式 (HH:MM:SS,mmm)"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    millis = int((seconds % 1) * 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
 def _gpu_status():
     """取得 GPU 使用狀態"""
     if DEVICE == "mps":
@@ -244,12 +332,12 @@ def _gpu_status():
 
 
 # ── 生成函式 ──────────────────────────────────────
-def generate_voice_design(text, language, voice_description):
+def generate_voice_design(text, language, voice_description, generate_srt=False):
     """Voice Design：用自然語言描述設計聲音（僅 1.7B）"""
     if not text or not text.strip():
-        return None, "錯誤：請輸入要合成的文字"
+        return None, None, "錯誤：請輸入要合成的文字"
     if not voice_description or not voice_description.strip():
-        return None, "錯誤：請輸入聲音描述"
+        return None, None, "錯誤：請輸入聲音描述"
 
     try:
         model = load_model("VoiceDesign", "1.7B")
@@ -260,24 +348,33 @@ def generate_voice_design(text, language, voice_description):
             non_streaming_mode=True,
             max_new_tokens=2048,
         )
-        filepath = _save_output(wavs, sr, "design")
-        return (sr, wavs[0]), f"合成成功！{_gpu_status()}\n儲存至: {filepath}"
+        wav_filepath = _save_output(wavs, sr, "design")
+
+        # 計算音訊時長並生成 SRT
+        duration = len(wavs[0]) / sr
+        srt_filepath = _generate_srt(text.strip(), duration) if generate_srt else None
+
+        status = f"合成成功！{_gpu_status()}\n儲存至: {wav_filepath}"
+        if srt_filepath:
+            status += f"\n字幕檔: {srt_filepath}"
+
+        return (sr, wavs[0]), srt_filepath, status
     except Exception as e:
-        return None, f"錯誤: {type(e).__name__}: {e}"
+        return None, None, f"錯誤: {type(e).__name__}: {e}"
 
 
 def generate_voice_clone(ref_audio, ref_text, target_text, language,
-                         use_xvector_only, model_size):
+                         use_xvector_only, model_size, generate_srt=True):
     """Voice Clone：用參考音訊複製聲音"""
     if not target_text or not target_text.strip():
-        return None, "錯誤：請輸入要合成的文字"
+        return None, None, "錯誤：請輸入要合成的文字"
 
     audio_tuple = _audio_to_tuple(ref_audio)
     if audio_tuple is None:
-        return None, "錯誤：請上傳參考音訊"
+        return None, None, "錯誤：請上傳參考音訊"
 
     if not use_xvector_only and (not ref_text or not ref_text.strip()):
-        return None, "錯誤：請輸入參考音訊的文字內容（或勾選「僅使用 x-vector」）"
+        return None, None, "錯誤：請輸入參考音訊的文字內容（或勾選「僅使用 x-vector」）"
 
     try:
         model = load_model("Base", model_size)
@@ -289,18 +386,28 @@ def generate_voice_clone(ref_audio, ref_text, target_text, language,
             x_vector_only_mode=use_xvector_only,
             max_new_tokens=2048,
         )
-        filepath = _save_output(wavs, sr, "clone")
-        return (sr, wavs[0]), f"聲音複製成功！{_gpu_status()}\n儲存至: {filepath}"
+        wav_filepath = _save_output(wavs, sr, "clone")
+
+        # 生成 SRT 字幕
+        srt_path = None
+        if generate_srt:
+            duration = len(wavs[0]) / sr
+            srt_path = _generate_srt(target_text.strip(), duration)
+
+        status = f"聲音複製成功！{_gpu_status()}\n音訊: {wav_filepath}"
+        if srt_path:
+            status += f"\n字幕: {srt_path}"
+        return (sr, wavs[0]), srt_path, status
     except Exception as e:
-        return None, f"錯誤: {type(e).__name__}: {e}"
+        return None, None, f"錯誤: {type(e).__name__}: {e}"
 
 
-def generate_custom_voice(text, language, speaker, instruct, model_size):
+def generate_custom_voice(text, language, speaker, instruct, model_size, generate_srt=True):
     """CustomVoice TTS：使用預設角色聲音"""
     if not text or not text.strip():
-        return None, "錯誤：請輸入要合成的文字"
+        return None, None, "錯誤：請輸入要合成的文字"
     if not speaker:
-        return None, "錯誤：請選擇角色"
+        return None, None, "錯誤：請選擇角色"
 
     try:
         model = load_model("CustomVoice", model_size)
@@ -312,10 +419,20 @@ def generate_custom_voice(text, language, speaker, instruct, model_size):
             non_streaming_mode=True,
             max_new_tokens=2048,
         )
-        filepath = _save_output(wavs, sr, f"tts_{speaker}")
-        return (sr, wavs[0]), f"合成成功！{_gpu_status()}\n儲存至: {filepath}"
+        wav_filepath = _save_output(wavs, sr, f"tts_{speaker}")
+
+        # 生成 SRT 字幕
+        srt_path = None
+        if generate_srt:
+            duration = len(wavs[0]) / sr
+            srt_path = _generate_srt(text.strip(), duration)
+
+        status = f"合成成功！{_gpu_status()}\n音訊: {wav_filepath}"
+        if srt_path:
+            status += f"\n字幕: {srt_path}"
+        return (sr, wavs[0]), srt_path, status
     except Exception as e:
-        return None, f"錯誤: {type(e).__name__}: {e}"
+        return None, None, f"錯誤: {type(e).__name__}: {e}"
 
 
 # ── Gradio 介面 ──────────────────────────────────
@@ -351,15 +468,18 @@ def build_ui():
                             placeholder="描述你想要的聲音特徵...",
                             value="体现撒娇稚嫩的萝莉女声，音调偏高且起伏明显，营造出黏人、做作又刻意卖萌的听觉效果。",
                         )
-                        design_btn = gr.Button("生成語音", variant="primary")
+                        with gr.Row():
+                            design_srt = gr.Checkbox(label="輸出 SRT 字幕", value=True)
+                            design_btn = gr.Button("生成語音", variant="primary")
                     with gr.Column(scale=2):
                         design_audio = gr.Audio(label="合成結果", type="numpy")
+                        design_srt_output = gr.File(label="字幕檔案 (SRT)")
                         design_status = gr.Textbox(label="狀態", interactive=False)
 
                 design_btn.click(
                     generate_voice_design,
-                    inputs=[design_text, design_language, design_instruct],
-                    outputs=[design_audio, design_status],
+                    inputs=[design_text, design_language, design_instruct, design_srt],
+                    outputs=[design_audio, design_srt_output, design_status],
                 )
 
             # ── Tab 2: Voice Clone ──
@@ -396,7 +516,9 @@ def build_ui():
                             clone_model_size = gr.Dropdown(
                                 label="模型大小", choices=MODEL_SIZES, value="1.7B",
                             )
-                        clone_btn = gr.Button("複製聲音並合成", variant="primary")
+                        with gr.Row():
+                            clone_srt = gr.Checkbox(label="輸出 SRT 字幕", value=True)
+                            clone_btn = gr.Button("複製聲音並合成", variant="primary")
 
                 # 上傳音訊後自動辨識文字
                 clone_ref_audio.change(
@@ -407,13 +529,13 @@ def build_ui():
 
                 with gr.Row():
                     clone_audio = gr.Audio(label="合成結果", type="numpy")
-                    clone_status = gr.Textbox(label="狀態", interactive=False)
+                    clone_srt_output = gr.File(label="字幕檔案 (SRT)")
 
                 clone_btn.click(
                     generate_voice_clone,
                     inputs=[clone_ref_audio, clone_ref_text, clone_text,
-                            clone_language, clone_xvector, clone_model_size],
-                    outputs=[clone_audio, clone_status],
+                            clone_language, clone_xvector, clone_model_size, clone_srt],
+                    outputs=[clone_audio, clone_srt_output, clone_status],
                 )
 
             # ── Tab 3: CustomVoice TTS ──
@@ -443,16 +565,19 @@ def build_ui():
                             tts_model_size = gr.Dropdown(
                                 label="模型大小", choices=MODEL_SIZES, value="1.7B",
                             )
-                        tts_btn = gr.Button("合成語音", variant="primary")
+                        with gr.Row():
+                            tts_srt = gr.Checkbox(label="輸出 SRT 字幕", value=True)
+                            tts_btn = gr.Button("合成語音", variant="primary")
                     with gr.Column(scale=2):
                         tts_audio = gr.Audio(label="合成結果", type="numpy")
+                        tts_srt_output = gr.File(label="字幕檔案 (SRT)")
                         tts_status = gr.Textbox(label="狀態", interactive=False)
 
                 tts_btn.click(
                     generate_custom_voice,
                     inputs=[tts_text, tts_language, tts_speaker,
-                            tts_instruct, tts_model_size],
-                    outputs=[tts_audio, tts_status],
+                            tts_instruct, tts_model_size, tts_srt],
+                    outputs=[tts_audio, tts_srt_output, tts_status],
                 )
 
         gr.Markdown("""
