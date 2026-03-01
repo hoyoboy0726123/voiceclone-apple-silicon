@@ -530,6 +530,7 @@ def build_ui():
                 with gr.Row():
                     clone_audio = gr.Audio(label="合成結果", type="numpy")
                     clone_srt_output = gr.File(label="字幕檔案 (SRT)")
+                    clone_status = gr.Textbox(label="狀態", interactive=False)
 
                 clone_btn.click(
                     generate_voice_clone,
