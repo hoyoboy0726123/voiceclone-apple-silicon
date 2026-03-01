@@ -13,6 +13,7 @@ Qwen3-TTS 聲音複製與語音合成系統（本地版）
 import os
 import tempfile
 import datetime
+import platform
 
 import gradio as gr
 import numpy as np
@@ -23,10 +24,19 @@ from huggingface_hub import snapshot_download
 from qwen_tts import Qwen3TTSModel
 
 # ── 設定 ──────────────────────────────────────────
+# 檢測是否為 Apple Silicon Mac
+IS_MAC = platform.system() == "Darwin" and platform.machine() == "arm64"
+DEVICE = "mps" if IS_MAC else ("cuda" if torch.cuda.is_available() else "cpu")
+print(f"使用設備: {DEVICE}")
+
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 MODEL_SIZES = ["0.6B", "1.7B"]
+
+# 檢測設備
+print(f"系統: {platform.system()}, 架構: {platform.machine()}")
+print(f"使用設備: {DEVICE}")
 
 SPEAKERS = [
     "Aiden", "Dylan", "Eric", "Ono_anna", "Ryan",
@@ -51,19 +61,22 @@ def _load_whisper():
     """載入 Whisper 模型（使用 turbo，速度快、品質好）"""
     global _whisper_model
     if _whisper_model is None:
-        print("正在載入 Whisper turbo 模型...")
-        _whisper_model = whisper.load_model("turbo", device="cuda")
+        print(f"正在載入 Whisper turbo 模型 (device: {DEVICE})...")
+        _whisper_model = whisper.load_model("turbo", device=DEVICE)
         print("Whisper 載入完成")
     return _whisper_model
 
 
 def _unload_whisper():
-    """釋放 Whisper 模型以騰出 VRAM 給 TTS"""
+    """釋放 Whisper 模型以騰出記憶體給 TTS"""
     global _whisper_model
     if _whisper_model is not None:
         del _whisper_model
         _whisper_model = None
-        torch.cuda.empty_cache()
+        if DEVICE == "cuda":
+            torch.cuda.empty_cache()
+        elif DEVICE == "mps":
+            torch.mps.empty_cache()
 
 
 def transcribe_audio(audio):
@@ -77,7 +90,10 @@ def transcribe_audio(audio):
         del _current_model
         _current_model = None
         _current_model_key = None
-        torch.cuda.empty_cache()
+        if DEVICE == "cuda":
+            torch.cuda.empty_cache()
+        elif DEVICE == "mps":
+            torch.mps.empty_cache()
 
     try:
         # Gradio Audio type="numpy" 回傳 (sr, wav)
@@ -123,17 +139,39 @@ def load_model(model_type: str, model_size: str):
         del _current_model
         _current_model = None
         _current_model_key = None
-        torch.cuda.empty_cache()
+        if DEVICE == "cuda":
+            torch.cuda.empty_cache()
+        elif DEVICE == "mps":
+            torch.mps.empty_cache()
 
     model_path = get_model_path(model_type, model_size)
-    print(f"正在載入模型: {model_type} {model_size} ...")
+    print(f"正在載入模型: {model_type} {model_size} ... (device: {DEVICE})")
 
-    _current_model = Qwen3TTSModel.from_pretrained(
-        model_path,
-        device_map="cuda",
-        dtype=torch.bfloat16,
-        attn_implementation="sdpa",
-    )
+    # 根據設備選擇合適的加載方式
+    if DEVICE == "mps":
+        # Apple Silicon MPS
+        _current_model = Qwen3TTSModel.from_pretrained(
+            model_path,
+            device_map="mps",
+            dtype=torch.float32,  # MPS 不完全支援 bfloat16
+            attn_implementation="sdpa",
+        )
+    elif DEVICE == "cuda":
+        # NVIDIA GPU
+        _current_model = Qwen3TTSModel.from_pretrained(
+            model_path,
+            device_map="cuda",
+            dtype=torch.bfloat16,
+            attn_implementation="sdpa",
+        )
+    else:
+        # CPU
+        _current_model = Qwen3TTSModel.from_pretrained(
+            model_path,
+            device_map="cpu",
+            dtype=torch.float32,
+            attn_implementation="sdpa",
+        )
     _current_model_key = key
     print(f"模型載入完成: {key}")
     return _current_model
@@ -196,7 +234,9 @@ def _save_output(wavs, sr, prefix="output"):
 
 def _gpu_status():
     """取得 GPU 使用狀態"""
-    if torch.cuda.is_available():
+    if DEVICE == "mps":
+        return "Apple Silicon MPS (Metal)"
+    elif torch.cuda.is_available():
         used = torch.cuda.memory_allocated(0) / 1024**3
         total = torch.cuda.get_device_properties(0).total_memory / 1024**3
         return f"VRAM: {used:.1f} / {total:.1f} GB"

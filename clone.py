@@ -18,11 +18,15 @@ Qwen3-TTS 聲音複製 CLI 工具
 import argparse
 import datetime
 import os
+import platform
 import sys
 
 import torch
 import soundfile as sf
 
+# 檢測設備
+IS_MAC = platform.system() == "Darwin" and platform.machine() == "arm64"
+DEVICE = "mps" if IS_MAC else ("cuda" if torch.cuda.is_available() else "cpu")
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -32,8 +36,16 @@ def get_model(model_id: str):
     """載入模型"""
     from qwen_tts import Qwen3TTSModel
 
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    # 根據設備選擇適當的設定
+    if DEVICE == "mps":
+        device = "mps"
+        dtype = torch.float32  # MPS 不完全支援 bfloat16
+    elif DEVICE == "cuda":
+        device = "cuda"
+        dtype = torch.bfloat16
+    else:
+        device = "cpu"
+        dtype = torch.float32
 
     print(f"正在載入模型: {model_id} ...")
     print(f"裝置: {device} | 精度: {dtype}")
