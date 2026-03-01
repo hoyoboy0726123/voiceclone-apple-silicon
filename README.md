@@ -1,5 +1,7 @@
 # VoiceClone - Qwen3-TTS 聲音複製與語音合成系統
 
+> 本專案基於 [joshhu/voiceclone](https://github.com/joshhu/voiceclone) 分支，新增 macOS Apple Silicon (MPS) 與 Windows (NVIDIA CUDA) 跨平台支援。
+
 基於 [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) 的本地聲音複製與語音合成系統，提供 Gradio 網頁介面和 CLI 命令列工具。
 
 ## 功能
