@@ -32,17 +32,87 @@
 
 ### 環境建置
 
-需要 [uv](https://docs.astral.sh/uv/) 和 Python 3.12+：
+#### 方法一：使用 uv（推薦）
+
+`uv` 是 Python 套件管理器，安裝一次後可管理所有 Python 專案：
 
 ```bash
-git clone https://github.com/hoyoboy0726123/voiceclone-apple-silicon.git
-cd voiceclone-apple-silicon
-uv sync
+# 安裝 uv（macOS / Linux / Windows）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows PowerShell
+irm https://astral.sh/uv/install.ps1 | iex
 ```
 
-**注意：**
-- **macOS**: 需要先安裝 ffmpeg：`brew install ffmpeg`
-- **Windows**: 需要先安裝 ffmpeg：`choco install ffmpeg` 或從 https://ffmpeg.org/download.html 下載
+```bash
+# Clone 專案
+git clone https://github.com/hoyoboy0726123/voiceclone-apple-silicon.git
+cd voiceclone-apple-silicon
+
+# 自動安裝所有依賴
+uv sync
+
+# 啟動程式
+uv run python app.py
+```
+
+---
+
+#### 方法二：使用 pip（傳統方式）
+
+```bash
+# Clone 專案
+git clone https://github.com/hoyoboy0726123/voiceclone-apple-silicon.git
+cd voiceclone-apple-silicon
+
+# 建立虛擬環境
+python -m venv .venv
+
+# 啟動虛擬環境
+# macOS/Linux:
+source .venv/bin/activate
+# Windows:
+.venv\Scripts\activate
+
+# 安裝所有依賴
+pip install -e .
+
+# 啟動程式
+python app.py
+```
+
+---
+
+#### 方法三：使用 pip + 直接安裝依賴
+
+```bash
+# Clone 專案
+git clone https://github.com/hoyoboy0726123/voiceclone-apple-silicon.git
+cd voiceclone-apple-silicon
+
+# 直接安裝依賴
+pip install gradio openai-whisper qwen-tts soundfile torch moviepy zhconv
+
+# 啟動程式
+python app.py
+```
+
+---
+
+### 前置軟體安裝
+
+**ffmpeg**（用於處理音訊/影片）：
+
+| 作業系統 | 安裝方式 |
+|----------|----------|
+| **macOS** | `brew install ffmpeg` |
+| **Windows (choco)** | `choco install ffmpeg` |
+| **Windows (直接下載)** | 從 [ffmpeg.org](https://ffmpeg.org/download.html) 下載 |
+| **Linux** | `sudo apt install ffmpeg` 或 `sudo yum install ffmpeg` |
+
+**Python 3.12+**：
+- macOS/Linux: 建議使用 [pyenv](https://github.com/pyenv/pyenv) 管理多版本
+- Windows: 從 [python.org](https://www.python.org/downloads/) 下載
 
 首次執行會自動從 Hugging Face 下載模型。
 
