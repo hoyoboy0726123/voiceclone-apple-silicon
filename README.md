@@ -36,12 +36,22 @@
 
 `uv` 是 Python 套件管理器，安裝一次後可管理所有 Python 專案：
 
-```bash
-# 安裝 uv（macOS / Linux / Windows）
-curl -LsSf https://astral.sh/uv/install.sh | sh
+```powershell
+# Windows CMD 安裝 uv（任選一種方式）
 
-# Windows PowerShell
-irm https://astral.sh/uv/install.ps1 | iex
+# 方式1: 使用 curl
+curl -LsSf https://astral.sh/uv/install.bat | cmd
+
+# 方式2: 使用 winget
+winget install astral-sh.uv
+
+# 方式3: 直接下載 exe
+# 從 https://github.com/astral-sh/uv/releases 下載 uv.exe 放到 PATH 目錄
+```
+
+```bash
+# macOS / Linux 安裝 uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 ```bash
