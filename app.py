@@ -16,6 +16,7 @@ Qwen3-TTS 聲音複製與語音合成系統（本地版）
 
 import os
 import re
+import subprocess
 import tempfile
 import datetime
 import platform
@@ -25,6 +26,13 @@ import numpy as np
 import torch
 import soundfile as sf
 import whisper
+import zhconv
+import zhconv
+try:
+    from moviepy import AudioFileClip, VideoFileClip
+    MOVIEPY_AVAILABLE = True
+except ImportError:
+    MOVIEPY_AVAILABLE = False
 from huggingface_hub import snapshot_download
 from qwen_tts import Qwen3TTSModel
 
@@ -66,8 +74,10 @@ def _load_whisper():
     """載入 Whisper 模型（使用 turbo，速度快、品質好）"""
     global _whisper_model
     if _whisper_model is None:
-        print(f"正在載入 Whisper turbo 模型 (device: {DEVICE})...")
-        _whisper_model = whisper.load_model("turbo", device=DEVICE)
+        # Whisper 在 MPS 上有 NaN 問題，強制使用 CPU
+        whisper_device = "cpu"
+        print(f"正在載入 Whisper turbo 模型 (device: {whisper_device})...")
+        _whisper_model = whisper.load_model("turbo", device=whisper_device)
         print("Whisper 載入完成")
     return _whisper_model
 
@@ -111,7 +121,7 @@ def transcribe_audio(audio):
             tmp_path = f.name
 
         model = _load_whisper()
-        result = model.transcribe(tmp_path)
+        result = model.transcribe(tmp_path, language="zh", initial_prompt="以下是繁體中文的句子，請準確轉錄每個發言，保持專業用詞。")
         text = result["text"].strip()
 
         os.unlink(tmp_path)
@@ -311,6 +321,11 @@ def _generate_srt(text: str, duration_seconds: float, output_path: str = None) -
     return output_path
 
 
+def _to_traditional_chinese(text: str) -> str:
+    """將簡體中文轉換為繁體中文（臺灣用法）"""
+    return zhconv.convert(text, 'zh-tw')
+
+
 def _format_srt_time(seconds: float) -> str:
     """將秒數轉換為 SRT 時間格式 (HH:MM:SS,mmm)"""
     hours = int(seconds // 3600)
@@ -318,6 +333,11 @@ def _format_srt_time(seconds: float) -> str:
     secs = int(seconds % 60)
     millis = int((seconds % 1) * 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def _to_traditional_chinese(text: str) -> str:
+    """將簡體中文轉換為繁體中文（臺灣用法）"""
+    return zhconv.convert(text, 'zh-tw')
 
 
 def _gpu_status():
@@ -435,6 +455,376 @@ def generate_custom_voice(text, language, speaker, instruct, model_size, generat
         return None, None, f"錯誤: {type(e).__name__}: {e}"
 
 
+def _extract_audio_from_video(video_path: str) -> tuple:
+    """從視頻中提取音訊
+
+    Returns:
+        (wav_array, sample_rate)
+    """
+    try:
+        from moviepy.editor import VideoFileClip
+
+        video = VideoFileClip(video_path)
+        audio = video.audio
+
+        # 獲取音訊參數
+        fps = audio.fps
+        n_channels = audio.nchannels
+
+        # 轉換為 numpy array
+        audio_array = audio.to_soundarray(fps=fps)
+
+        # 轉換為立體聲（如果需要）
+        if audio_array.ndim == 1:
+            audio_array = np.array([audio_array, audio_array]).T
+
+        video.close()
+        audio.close()
+
+        return audio_array, fps
+    except Exception as e:
+        raise RuntimeError(f"無法從視頻提取音訊: {e}")
+
+
+def process_audio_video_subtitle(audio_file, output_format="srt"):
+    """處理音訊/視頻文件並生成字幕
+
+    Args:
+        audio_file: Gradio 上傳的音訊/視頻文件
+        output_format: 輸出格式 (srt, vtt, txt)
+
+    Returns:
+        (audio_preview, subtitle_file_path, status_message)
+    """
+    if audio_file is None:
+        return None, None, "錯誤：請上傳音訊或視頻檔案"
+
+    try:
+        # 釋放 TTS 模型
+        global _current_model, _current_model_key
+        if _current_model is not None:
+            del _current_model
+            _current_model = None
+            _current_model_key = None
+            if DEVICE == "cuda":
+                torch.cuda.empty_cache()
+            elif DEVICE == "mps":
+                torch.mps.empty_cache()
+
+        # 處理上傳的文件
+        file_path = audio_file
+        audio_preview = None
+        sample_rate = 16000
+
+        # 檢查文件類型
+        file_ext = os.path.splitext(file_path)[1].lower()
+
+        # 如果是視頻文件，使用 ffmpeg 提取音訊
+        if file_ext in ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv']:
+            # 使用 ffmpeg 提取音訊
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                audio_path = f.name
+
+            # 執行 ffmpeg 提取音訊
+            result = subprocess.run(
+                ['ffmpeg', '-i', file_path, '-vn', '-acodec', 'pcm_s16le',
+                 '-ar', '16000', '-ac', '1', '-y', audio_path],
+                capture_output=True, text=True
+            )
+
+            if result.returncode != 0:
+                raise RuntimeError(f"ffmpeg 提取音訊失敗: {result.stderr}")
+
+            # 讀取提取的音訊
+            audio_array, sample_rate = sf.read(audio_path)
+            os.unlink(audio_path)
+
+            # 確保是 mono 和 float32（MPS 支援）
+            if audio_array.ndim > 1:
+                audio_array = audio_array.mean(axis=1)
+            audio_array = audio_array.astype(np.float32)
+
+            audio_preview = (sample_rate, audio_array)
+        else:
+            # 音訊文件 - 直接讀取
+            audio_array, sample_rate = sf.read(file_path)
+            # 轉換為 mono 和 float32
+            if audio_array.ndim > 1:
+                audio_array = audio_array.mean(axis=1)
+            audio_array = audio_array.astype(np.float32)
+
+            # 轉換為 16kHz
+            if sample_rate != 16000:
+                num_samples = int(len(audio_array) * 16000 / sample_rate)
+                indices = np.linspace(0, len(audio_array) - 1, num_samples, dtype=np.int32)
+                audio_array = audio_array[indices]
+                sample_rate = 16000
+            audio_preview = (sample_rate, audio_array)
+
+        # 儲存為暫存檔案讓 Whisper 處理
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            sf.write(f.name, audio_array, sample_rate)
+            tmp_path = f.name
+
+        # 使用 Whisper 進行語音識別（強制使用 CPU 避免 MPS 問題，預設繁體中文）
+        # 根據研究，英文 prompt 在中文任務上效果更好
+        model = _load_whisper()
+        result = model.transcribe(
+            tmp_path,
+            language="zh",
+            initial_prompt="以下是繁體中文的句子，請準確轉錄每個發言，保持專業用詞。",
+            word_timestamps=True,
+            fp16=False
+        )
+
+        # 清理暫存
+        os.unlink(tmp_path)
+
+        # 釋放 Whisper 模型
+        _unload_whisper()
+
+        # 生成字幕
+        segments = result.get("segments", [])
+
+        if not segments:
+            return audio_preview, None, "警告：未能識別出文字"
+
+        # 根據格式生成字幕
+        if output_format == "srt":
+            # 從 segments 取得時長
+            duration = segments[-1]["end"] if segments else 0
+            subtitle_path = _generate_srt_from_segments(segments, duration)
+        elif output_format == "vtt":
+            subtitle_path = _generate_vtt_from_segments(segments)
+        else:  # txt
+            subtitle_path = _generate_txt_from_segments(segments)
+
+        status = f"辨識完成！{_gpu_status()}\n辨識文字: {_to_traditional_chinese(result['text'].strip()[:100])}...\n字幕檔: {subtitle_path}"
+
+        # 只返回音訊預覽和字幕檔
+        return audio_preview, subtitle_path, status
+
+    except Exception as e:
+        _unload_whisper()
+        return None, None, f"錯誤: {type(e).__name__}: {e}"
+
+
+def _generate_vtt_from_segments(segments: list) -> str:
+    """從 Whisper segments 生成 VTT 字幕"""
+    vtt_content = ["WEBVTT", ""]
+
+    for seg in segments:
+        start = _format_vtt_time(seg["start"])
+        end = _format_vtt_time(seg["end"])
+        text = seg["text"].strip()
+
+        vtt_content.append(f"{start} --> {end}")
+        vtt_content.append(text)
+        vtt_content.append("")
+
+    vtt_text = "\n".join(vtt_content)
+
+    # 儲存
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = os.path.join(OUTPUT_DIR, f"subtitle_{ts}.vtt")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(vtt_text)
+
+    return output_path
+
+
+def _generate_txt_from_segments(segments: list) -> str:
+    """從 Whisper segments 生成純文字"""
+    texts = [seg["text"].strip() for seg in segments]
+    txt_text = "\n".join(texts)
+
+    # 儲存
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = os.path.join(OUTPUT_DIR, f"subtitle_{ts}.txt")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(txt_text)
+
+    return output_path
+
+
+def _format_vtt_time(seconds: float) -> str:
+    """將秒數轉換為 VTT 時間格式 (HH:MM:SS.mmm)"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    millis = int((seconds % 1) * 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
+
+
+# ── 字幕識別功能 ───────────────────────────────────
+def _extract_audio_from_video(video_path: str) -> tuple:
+    """從影片中提取音訊，使用 ffmpeg"""
+    import subprocess
+
+    # 使用 ffmpeg 提取音訊
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_audio:
+        tmp_audio_path = tmp_audio.name
+
+    try:
+        # 執行 ffmpeg 提取音訊
+        cmd = [
+            "ffmpeg", "-i", video_path,
+            "-vn", "-acodec", "pcm_s16le",
+            "-ar", "16000", "-ac", "1",
+            "-y", tmp_audio_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg 錯誤: {result.stderr}")
+
+        # 讀取提取的音訊
+        audio_array, sr = sf.read(tmp_audio_path)
+
+        # 轉換為 mono
+        if audio_array.ndim > 1:
+            audio_array = audio_array.mean(axis=1)
+
+        return audio_array, sr
+
+    except FileNotFoundError:
+        raise RuntimeError("請先安裝 ffmpeg: brew install ffmpeg")
+    except Exception as e:
+        raise RuntimeError(f"無法提取音訊: {e}")
+    finally:
+        # 清理暫存檔
+        if os.path.exists(tmp_audio_path):
+            try:
+                os.unlink(tmp_audio_path)
+            except:
+                pass
+
+
+def transcribe_media(file_path: str, language: str = "Auto") -> dict:
+    """
+    上傳音訊/影片後生成字幕
+
+    Returns:
+        dict: {
+            "audio": (sr, wav_array) - 可播放的音訊,
+            "text": str - 識別的文字,
+            "srt_path": str - SRT 字幕檔案路徑,
+            "duration": float - 音訊時長,
+            "status": str - 狀態訊息
+        }
+    """
+    if file_path is None:
+        return None, None, None, 0, "錯誤：請上傳檔案"
+
+    try:
+        # 先釋放 TTS 模型騰出記憶體
+        global _current_model, _current_model_key
+        if _current_model is not None:
+            del _current_model
+            _current_model = None
+            _current_model_key = None
+            if DEVICE == "cuda":
+                torch.cuda.empty_cache()
+            elif DEVICE == "mps":
+                torch.mps.empty_cache()
+
+        # 根據副檔名判斷類型
+        ext = os.path.splitext(file_path)[1].lower()
+
+        # 提取音訊
+        print(f"正在處理檔案: {file_path}")
+        if ext in ['.mp4', '.mov', '.avi', '.mkv', '.webm']:
+            # 影片檔案 - 提取音訊
+            wav, sr = _extract_audio_from_video(file_path)
+        elif ext in ['.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac']:
+            # 音訊檔案
+            wav, sr = sf.read(file_path)
+            if wav.ndim > 1:
+                wav = wav.mean(axis=1)
+        else:
+            return None, None, None, 0, f"不支援的檔案格式: {ext}"
+
+        # 正規化音訊
+        wav = _normalize_audio(wav)
+
+        # 儲存暫存檔給 Whisper
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            sf.write(f.name, wav, sr)
+            tmp_path = f.name
+
+        # 載入 Whisper 模型
+        model = _load_whisper()
+
+        # 語言參數
+        lang_param = None if language == "Auto" else language
+
+        # 識別 - 使用 initial_prompt 引导繁體中文
+        print(f"正在識別字幕... (language: {language})")
+        transcribe_kwargs = {"fp16": False}
+        if lang_param == "Chinese" or lang_param == "zh":
+            transcribe_kwargs["initial_prompt"] = "以下是繁體中文的句子，請準確轉錄每個發言，保持專業用詞。"
+        if lang_param:
+            transcribe_kwargs["language"] = lang_param
+
+        result = model.transcribe(tmp_path, **transcribe_kwargs)
+
+        text = result["text"].strip()
+        segments = result.get("segments", [])
+
+        # 清理
+        os.unlink(tmp_path)
+        _unload_whisper()
+
+        # 生成 SRT（使用 Whisper 的時間戳記）
+        duration = len(wav) / sr
+        srt_path = _generate_srt_from_segments(segments, duration) if segments else _generate_srt(text, duration)
+
+        status = f"字幕識別成功！{_gpu_status()}\n"
+        status += f"時長: {duration:.1f}秒\n"
+        status += f"文字: {text[:100]}{'...' if len(text) > 100 else ''}"
+
+        return (sr, wav), text, srt_path, duration, status
+
+    except Exception as e:
+        _unload_whisper()
+        return None, None, None, 0, f"錯誤: {type(e).__name__}: {e}"
+
+
+def _generate_srt_from_segments(segments: list, duration: float) -> str:
+    """根據 Whisper 的 segments 產生更精確的 SRT（自動轉為繁體中文）"""
+    srt_content = []
+
+    for i, seg in enumerate(segments, 1):
+        start = seg.get("start", 0)
+        end = seg.get("end", 0)
+        text = _to_traditional_chinese(seg.get("text", "").strip())
+
+        if not text:
+            continue
+
+        srt_content.append(str(i))
+        srt_content.append(f"{_format_srt_time(start)} --> {_format_srt_time(end)}")
+        srt_content.append(text)
+        srt_content.append("")
+
+    if not srt_content:
+        # 如果沒有 segments，回退到簡單版
+        return _generate_srt("", duration)
+
+    srt_text = "\n".join(srt_content)
+
+    # 儲存檔案
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = os.path.join(OUTPUT_DIR, f"subtitle_{ts}.srt")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(srt_text)
+
+    return output_path
+
+
 # ── Gradio 介面 ──────────────────────────────────
 def build_ui():
     css = ".gradio-container {max-width: none !important;}"
@@ -460,7 +850,7 @@ def build_ui():
                             value="哥哥，你回來啦，人家等了你好久好久了，要抱抱！",
                         )
                         design_language = gr.Dropdown(
-                            label="語言", choices=LANGUAGES, value="Auto",
+                            label="語言", choices=LANGUAGES, value="Chinese",
                         )
                         design_instruct = gr.Textbox(
                             label="聲音描述",
@@ -511,7 +901,7 @@ def build_ui():
                         )
                         with gr.Row():
                             clone_language = gr.Dropdown(
-                                label="語言", choices=LANGUAGES, value="Auto",
+                                label="語言", choices=LANGUAGES, value="Chinese",
                             )
                             clone_model_size = gr.Dropdown(
                                 label="模型大小", choices=MODEL_SIZES, value="1.7B",
@@ -552,7 +942,7 @@ def build_ui():
                         )
                         with gr.Row():
                             tts_language = gr.Dropdown(
-                                label="語言", choices=LANGUAGES, value="Auto",
+                                label="語言", choices=LANGUAGES, value="Chinese",
                             )
                             tts_speaker = gr.Dropdown(
                                 label="角色", choices=SPEAKERS, value="Vivian",
@@ -579,6 +969,37 @@ def build_ui():
                     inputs=[tts_text, tts_language, tts_speaker,
                             tts_instruct, tts_model_size, tts_srt],
                     outputs=[tts_audio, tts_srt_output, tts_status],
+                )
+
+            # ── Tab 4: 音訊/視頻字幕生成 ──
+            with gr.Tab("字幕生成 (ASR)"):
+                gr.Markdown("### 上傳音訊或視頻檔案，自動生成字幕")
+                with gr.Row():
+                    with gr.Column(scale=2):
+                        asr_input = gr.File(
+                            label="上傳音訊或視頻",
+                            file_count="single",
+                            file_types=["audio", "video"]
+                        )
+                        with gr.Row():
+                            asr_format = gr.Dropdown(
+                                label="輸出格式",
+                                choices=["srt", "vtt", "txt"],
+                                value="srt",
+                            )
+                            asr_btn = gr.Button("開始生成字幕", variant="primary")
+                    with gr.Column(scale=2):
+                        asr_audio_preview = gr.Audio(label="音訊預覽", type="numpy")
+
+                with gr.Row():
+                    asr_srt_output = gr.File(label="字幕檔案")
+                    asr_status = gr.Textbox(label="狀態", interactive=False)
+
+                # 生成字幕
+                asr_btn.click(
+                    process_audio_video_subtitle,
+                    inputs=[asr_input, asr_format],
+                    outputs=[asr_audio_preview, asr_srt_output, asr_status],
                 )
 
         gr.Markdown("""

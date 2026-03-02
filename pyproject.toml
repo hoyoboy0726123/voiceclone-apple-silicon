@@ -10,6 +10,8 @@ dependencies = [
     "qwen-tts>=0.1.1",
     "soundfile>=0.13.1",
     "torch>=2.10.0",
+    "moviepy>=2.2.0",
+    "zhconv>=1.2",
 ]
 
 [project.scripts]
