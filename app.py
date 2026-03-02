@@ -516,6 +516,9 @@ def process_audio_video_subtitle(audio_file, output_format="srt"):
         audio_preview = None
         sample_rate = 16000
 
+        # 提取原始檔名（用於輸出）
+        original_filename = os.path.splitext(os.path.basename(file_path))[0]
+
         # 檢查文件類型
         file_ext = os.path.splitext(file_path)[1].lower()
 
@@ -601,12 +604,16 @@ def process_audio_video_subtitle(audio_file, output_format="srt"):
 
         status = f"辨識完成！{_gpu_status()}\n辨識文字: {_to_traditional_chinese(result['text'].strip()[:100])}...\n字幕檔: {subtitle_path}"
 
-        # 只返回音訊預覽和字幕檔
-        return audio_preview, subtitle_path, status
+        # 讀取字幕內容返回顯示
+        with open(subtitle_path, "r", encoding="utf-8") as f:
+            subtitle_text = f.read()
+
+        # 返回音訊預覽、字幕文字、字幕檔、狀態、檔名
+        return audio_preview, subtitle_text, subtitle_path, status, original_filename
 
     except Exception as e:
         _unload_whisper()
-        return None, None, f"錯誤: {type(e).__name__}: {e}"
+        return None, "", None, f"錯誤: {type(e).__name__}: {e}", original_filename
 
 
 def _generate_vtt_from_segments(segments: list) -> str:
@@ -825,6 +832,33 @@ def _generate_srt_from_segments(segments: list, duration: float) -> str:
     return output_path
 
 
+def save_edited_subtitle(subtitle_text: str, output_format: str, filename_prefix: str = "subtitle") -> tuple:
+    """儲存編輯後的字幕
+
+    Args:
+        subtitle_text: 編輯後的字幕內容
+        output_format: 輸出格式 (srt, vtt, txt)
+        filename_prefix: 檔名前綴
+
+    Returns:
+        (file_path, status_message)
+    """
+    if not subtitle_text or not subtitle_text.strip():
+        return None, "錯誤：字幕內容為空"
+
+    try:
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        ext = output_format
+        output_path = os.path.join(OUTPUT_DIR, f"{filename_prefix}_{ts}.{ext}")
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(subtitle_text)
+
+        return output_path, f"字幕已儲存至: {output_path}"
+    except Exception as e:
+        return None, f"儲存失敗: {type(e).__name__}: {e}"
+
+
 # ── Gradio 介面 ──────────────────────────────────
 def build_ui():
     css = ".gradio-container {max-width: none !important;}"
@@ -991,15 +1025,33 @@ def build_ui():
                     with gr.Column(scale=2):
                         asr_audio_preview = gr.Audio(label="音訊預覽", type="numpy")
 
+                # 字幕內容顯示與編輯區域
                 with gr.Row():
-                    asr_srt_output = gr.File(label="字幕檔案")
+                    asr_filename_state = gr.State(value="subtitle")
+                    asr_subtitle_text = gr.Textbox(
+                        label="字幕內容（可編輯）",
+                        lines=8,
+                        interactive=True,
+                        placeholder="生成的字幕內容會顯示在這裡，可以直接編輯..."
+                    )
+
+                with gr.Row():
+                    asr_save_btn = gr.Button("💾 儲存字幕檔案", variant="secondary")
+                    asr_srt_output = gr.File(label="字幕檔案下載")
                     asr_status = gr.Textbox(label="狀態", interactive=False)
 
                 # 生成字幕
                 asr_btn.click(
                     process_audio_video_subtitle,
                     inputs=[asr_input, asr_format],
-                    outputs=[asr_audio_preview, asr_srt_output, asr_status],
+                    outputs=[asr_audio_preview, asr_subtitle_text, asr_srt_output, asr_status, asr_filename_state],
+                )
+
+                # 儲存編輯後的字幕
+                asr_save_btn.click(
+                    save_edited_subtitle,
+                    inputs=[asr_subtitle_text, asr_format, asr_filename_state],
+                    outputs=[asr_srt_output, asr_status],
                 )
 
         gr.Markdown("""
