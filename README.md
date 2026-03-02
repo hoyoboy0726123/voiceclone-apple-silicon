@@ -11,10 +11,13 @@
 | **Voice Design** | 用自然語言描述設計全新聲音 | 1.7B |
 | **Voice Clone** | 上傳 5~15 秒參考音訊，複製該聲音 | 0.6B / 1.7B |
 | **CustomVoice TTS** | 9 種預設角色 + 情緒/風格控制 | 0.6B / 1.7B |
+| **字幕生成 (ASR)** | 上傳音訊/影片，自動生成字幕 | Whisper |
 
 - 支援 10 種語言：中文、英文、日文、韓文、德文、法文、俄文、葡萄牙文、西班牙文、義大利文
 - Voice Clone 上傳音訊後，自動使用 Whisper 辨識參考文字
 - VRAM 智慧管理：一次只載入一個模型，切換時自動釋放
+- 支援 SRT、VTT、TXT 字幕格式輸出
+- 字幕內容可直接在前端編輯並儲存
 
 ## 硬體需求
 
@@ -32,10 +35,14 @@
 需要 [uv](https://docs.astral.sh/uv/) 和 Python 3.12+：
 
 ```bash
-git clone https://github.com/joshhu/voiceclone.git
-cd voiceclone
+git clone https://github.com/hoyoboy0726123/voiceclone-apple-silicon.git
+cd voiceclone-apple-silicon
 uv sync
 ```
+
+**注意：**
+- **macOS**: 需要先安裝 ffmpeg：`brew install ffmpeg`
+- **Windows**: 需要先安裝 ffmpeg：`choco install ffmpeg` 或從 https://ffmpeg.org/download.html 下載
 
 首次執行會自動從 Hugging Face 下載模型。
 

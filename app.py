@@ -697,7 +697,7 @@ def _extract_audio_from_video(video_path: str) -> tuple:
         return audio_array, sr
 
     except FileNotFoundError:
-        raise RuntimeError("請先安裝 ffmpeg: brew install ffmpeg")
+        raise RuntimeError("請先安裝 ffmpeg:\n  macOS: brew install ffmpeg\n  Windows: choco install ffmpeg 或從 https://ffmpeg.org/download.html 下載")
     except Exception as e:
         raise RuntimeError(f"無法提取音訊: {e}")
     finally:
