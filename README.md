@@ -39,15 +39,18 @@
 `uv` 是 Python 套件管理器，安裝一次後可管理所有 Python 專案：
 
 ```powershell
-# Windows CMD 安裝 uv（任選一種方式）
+# Windows 安裝 uv（任選一種方式）
 
-# 方式1: 使用 curl
+# 方式1: CMD
 curl -LsSf https://astral.sh/uv/install.bat | cmd
 
-# 方式2: 使用 winget
+# 方式2: PowerShell
+irm https://astral.sh/uv/install.ps1 | iex
+
+# 方式3: winget
 winget install astral-sh.uv
 
-# 方式3: 直接下載 exe
+# 方式4: 直接下載 exe
 # 從 https://github.com/astral-sh/uv/releases 下載 uv.exe 放到 PATH 目錄
 ```
 
@@ -112,6 +115,14 @@ python app.py
 ---
 
 ### 前置軟體安裝
+
+**Chocolatey（Windows 套件管理器）**：
+```powershell
+# 以管理員身份開啟 PowerShell 執行
+Set-ExecutionPolicy Bypass -Scope Process -Force
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+```
 
 **ffmpeg**（用於處理音訊/影片）：
 
