@@ -1,6 +1,8 @@
 # VoiceClone - Qwen3-TTS 聲音複製與語音合成系統
 
-> 本專案基於 [joshhu/voiceclone](https://github.com/joshhu/voiceclone) 分支，新增 macOS Apple Silicon (MPS) 與 Windows (NVIDIA CUDA) 跨平台支援。
+> 基於 [joshhu/voiceclone](https://github.com/joshhu/voiceclone) 專案進行跨平台開發
+> - 原作者：joshhu
+> - 新增功能：macOS Apple Silicon (MPS) / Windows (NVIDIA CUDA) 跨平台支援、字幕生成 (ASR)
 
 基於 [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) 的本地聲音複製與語音合成系統，提供 Gradio 網頁介面和 CLI 命令列工具。
 
@@ -178,10 +180,20 @@ voiceclone/
 
 ## 致謝
 
+### 原作者
+- **joshhu** - [joshhu/voiceclone](https://github.com/joshhu/voiceclone) 原始專案開發者
+
+### 技術支援
 - [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) by Alibaba Qwen Team
 - [OpenAI Whisper](https://github.com/openai/whisper) 語音辨識
 - [Gradio](https://gradio.app/) 網頁介面
 
 ## 授權
 
-本專案基於 [Apache 2.0](LICENSE) 授權。模型授權請參考 [Qwen3-TTS 授權](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice)。
+| 元件 | 授權 |
+|------|------|
+| 本專案程式碼 | [Apache 2.0](LICENSE) |
+| Qwen3-TTS 模型 | [Qwen3-TTS 授權](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice) |
+| Whisper | [MIT](https://github.com/openai/whisper) |
+
+本專案基於 Apache 2.0 授權開源，請遵守相關授權條款。
